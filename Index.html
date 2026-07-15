@@ -1,0 +1,159 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Shared Trip Ledger</title>
+    <!-- Tailwind CSS for modern styling -->
+    <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="bg-gray-100 min-h-screen flex flex-col items-center p-4">
+
+    <div class="w-full max-w-md bg-white rounded-2xl shadow-xl p-6 mt-4">
+        <!-- Header -->
+        <div class="flex justify-between items-center border-b pb-4 mb-4">
+            <h1 class="text-xl font-bold text-gray-800">Trip Ledger 2026</h1>
+            <span id="sync-status" class="text-xs bg-amber-100 text-amber-800 px-2 py-1 rounded-full font-medium">Connecting...</span>
+        </div>
+
+        <!-- Total Balance Display -->
+        <div class="bg-emerald-50 rounded-xl p-4 mb-6 text-center">
+            <p class="text-sm text-emerald-800 font-medium">Total Expenses</p>
+            <p id="total-amount" class="text-3xl font-black text-emerald-950 mt-1">$0.00</p>
+        </div>
+
+        <!-- Add Transaction Form -->
+        <form id="ledger-form" class="space-y-3 mb-6">
+            <div>
+                <label class="block text-xs font-semibold text-gray-500 uppercase tracking-wider mb-1">Description</label>
+                <input type="text" id="desc-input" placeholder="e.g., Dinner, Gas, Tickets" required 
+                    class="w-full px-3 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-emerald-500">
+            </div>
+            <div class="grid grid-cols-2 gap-3">
+                <div>
+                    <label class="block text-xs font-semibold text-gray-500 uppercase tracking-wider mb-1">Amount ($)</label>
+                    <input type="number" id="amount-input" step="0.01" placeholder="0.00" required 
+                        class="w-full px-3 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-emerald-500">
+                </div>
+                <div>
+                    <label class="block text-xs font-semibold text-gray-500 uppercase tracking-wider mb-1">Paid By</label>
+                    <input type="text" id="payer-input" placeholder="Your Name" required 
+                        class="w-full px-3 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-emerald-500">
+                </div>
+            </div>
+            <button type="submit" class="w-full bg-emerald-600 hover:bg-emerald-700 text-white font-bold py-2.5 rounded-lg transition duration-150">
+                Add Expense
+            </button>
+        </form>
+
+        <!-- Transaction List -->
+        <div class="space-y-3">
+            <h2 class="text-sm font-bold text-gray-400 uppercase tracking-wider">Activity Log</h2>
+            <div id="transaction-list" class="space-y-2 max-h-72 overflow-y-auto pr-1">
+                <p class="text-sm text-gray-400 text-center py-4">No transactions recorded yet.</p>
+            </div>
+        </div>
+    </div>
+
+    <!-- Firebase SDKs -->
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-app.js";
+        import { getFirestore, collection, addDoc, query, orderBy, onSnapshot, serverTimestamp } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-firestore.js";
+
+        // IMPORTANT: Replace this placeholder config with your actual Firebase project config details
+        const firebaseConfig = {
+            apiKey: "YOUR_API_KEY",
+            authDomain: "YOUR_PROJECT_ID.firebaseapp.com",
+            projectId: "YOUR_PROJECT_ID",
+            storageBucket: "YOUR_PROJECT_ID.appspot.com",
+            messagingSenderId: "YOUR_SENDER_ID",
+            appId: "YOUR_APP_ID"
+        };
+
+        // Initialize Firebase
+        const app = initializeApp(firebaseConfig);
+        const db = getFirestore(app);
+        const ledgerCollection = collection(db, "trip-ledger");
+
+        // DOM Elements
+        const form = document.getElementById("ledger-form");
+        const descInput = document.getElementById("desc-input");
+        const amountInput = document.getElementById("amount-input");
+        const payerInput = document.getElementById("payer-input");
+        const listContainer = document.getElementById("transaction-list");
+        const totalDisplay = document.getElementById("total-amount");
+        const statusDisplay = document.getElementById("sync-status");
+
+        // Listen for Real-time Updates from Firestore
+        const q = query(ledgerCollection, orderBy("createdAt", "desc"));
+        onSnapshot(q, (snapshot) => {
+            statusDisplay.textContent = "Synced";
+            statusDisplay.className = "text-xs bg-emerald-100 text-emerald-800 px-2 py-1 rounded-full font-medium";
+            
+            let html = "";
+            let total = 0;
+
+            if (snapshot.empty) {
+                listContainer.innerHTML = `<p class="text-sm text-gray-400 text-center py-4">No transactions recorded yet.</p>`;
+                totalDisplay.textContent = "$0.00";
+                return;
+            }
+
+            snapshot.forEach((doc) => {
+                const data = doc.data();
+                const amount = parseFloat(data.amount) || 0;
+                total += amount;
+
+                html += `
+                    <div class="flex justify-between items-center p-3 bg-gray-50 rounded-lg border border-gray-100">
+                        <div>
+                            <p class="font-semibold text-gray-800">${escapeHtml(data.description)}</p>
+                            <p class="text-xs text-gray-400">Paid by ${escapeHtml(data.payer)}</p>
+                        </div>
+                        <p class="font-bold text-gray-700">$${amount.toFixed(2)}</p>
+                    </div>
+                `;
+            });
+
+            listContainer.innerHTML = html;
+            totalDisplay.textContent = `$${total.toFixed(2)}`;
+        }, (error) => {
+            console.error("Firestore sync error: ", error);
+            statusDisplay.textContent = "Offline/Error";
+            statusDisplay.className = "text-xs bg-red-100 text-red-800 px-2 py-1 rounded-full font-medium";
+        });
+
+        // Handle Form Submission / Writing data to Firebase
+        form.addEventListener("submit", async (e) => {
+            e.preventDefault();
+            
+            const description = descInput.value.trim();
+            const amount = parseFloat(amountInput.value);
+            const payer = payerInput.value.trim();
+
+            if (!description || isNaN(amount) || !payer) return;
+
+            try {
+                await addDoc(ledgerCollection, {
+                    description,
+                    amount,
+                    payer,
+                    createdAt: serverTimestamp()
+                });
+                
+                // Clear inputs except the payer name (convenience for the same user entering multiple items)
+                descInput.value = "";
+                amountInput.value = "";
+                descInput.focus();
+            } catch (err) {
+                alert("Failed to save transaction: " + err.message);
+            }
+        });
+
+        // Simple helper to prevent HTML injection attacks
+        function escapeHtml(str) {
+            return str.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+        }
+    </script>
+</body>
+</html>
