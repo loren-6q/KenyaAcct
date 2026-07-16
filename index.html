@@ -3,13 +3,18 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Kenya Splitter - Safari Expense Tracker</title>
+    <title>Kenya Splitter - Realtime Safari Tracker</title>
     <!-- Tailwind CSS for UI styling -->
     <script src="https://cdn.tailwindcss.com"></script>
-    <!-- React & Babel to run directly in the browser -->
+    
+    <!-- React & Babel -->
     <script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
     <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
     <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+
+    <!-- Firebase SDKs (Web Compatible CDN imports) -->
+    <script src="https://www.gstatic.com/firebasejs/10.8.0/firebase-app-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/10.8.0/firebase-firestore-compat.js"></script>
 </head>
 <body class="bg-slate-50 text-slate-900 font-sans pb-24">
 
@@ -17,6 +22,20 @@
 
     <script type="text/babel">
       const { useState, useEffect, useMemo } = React;
+
+      // --- YOUR FIREBASE CONFIGURATION (FIXED & FORMATTED) ---
+      const firebaseConfig = {
+        apiKey: "AIzaSyBMo8yhuKVPLeu8fgVCengdVYyM2x74ylM",
+        authDomain: "kenyakash.firebaseapp.com",
+        projectId: "kenyakash",
+        storageBucket: "kenyakash.firebasestorage.app",
+        messagingSenderId: "53855325790",
+        appId: "1:53855325790:web:a04b0904604eb335892ecf"
+      };
+
+      // Initialize Firebase (Compat Mode)
+      firebase.initializeApp(firebaseConfig);
+      const db = firebase.firestore();
 
       // --- YOUR CUSTOM FAMILY ROSTER ---
       const INITIAL_FAMILIES = [
@@ -64,12 +83,9 @@
       ];
 
       function App() {
-        // Core states loading from LocalStorage for seamless browser-side persistence
-        const [expenses, setExpenses] = useState(() => {
-          const saved = localStorage.getItem('kenya_splitter_expenses_v5');
-          return saved ? JSON.parse(saved) : [];
-        });
-
+        // Core states
+        const [expenses, setExpenses] = useState([]);
+        const [isLoading, setIsLoading] = useState(true);
         const [exchangeRate, setExchangeRate] = useState(() => {
           const saved = localStorage.getItem('kenya_splitter_rate_v5');
           return saved ? parseFloat(saved) : 129.31; 
@@ -92,16 +108,32 @@
           return INITIAL_FAMILIES.flatMap(f => f.members.map(m => ({ ...m, familyId: f.id, familyName: f.name, color: f.text })));
         }, []);
 
-        // Save expenses and exchange rates automatically to browser storage
+        // Realtime Firestore Listener
         useEffect(() => {
-          localStorage.setItem('kenya_splitter_expenses_v5', JSON.stringify(expenses));
-        }, [expenses]);
+          const unsubscribe = db.collection('expenses')
+            .orderBy('createdAt', 'desc')
+            .onSnapshot((snapshot) => {
+              const loadedExpenses = [];
+              snapshot.forEach((doc) => {
+                loadedExpenses.push({ id: doc.id, ...doc.data() });
+              });
+              setExpenses(loadedExpenses);
+              setIsLoading(false);
+            }, (error) => {
+              console.error("Firestore loading error: ", error);
+              showToast("Database connection error!");
+              setIsLoading(false);
+            });
 
+          return () => unsubscribe();
+        }, []);
+
+        // Persist local custom rates
         useEffect(() => {
           localStorage.setItem('kenya_splitter_rate_v5', exchangeRate.toString());
         }, [exchangeRate]);
 
-        // Default the split to include everyone on initial load
+        // Default splits to include everyone initially
         useEffect(() => {
           if (coveredMemberIds.length === 0) {
             setCoveredMemberIds(allMembers.map(m => m.id));
@@ -124,7 +156,7 @@
               }
             }
           } catch (err) {
-            showToast("Couldn't fetch live rate, using current value.");
+            showToast("Couldn't fetch live rate.");
           }
         };
 
@@ -135,7 +167,7 @@
           }, 0);
         }, [customAmounts]);
 
-        const handleSubmitExpense = (e) => {
+        const handleSubmitExpense = async (e) => {
           e.preventDefault();
           if (!description.trim()) {
             showToast("Please enter a description.");
@@ -179,8 +211,7 @@
             });
           }
 
-          const newExpense = {
-            id: editingExpenseId || `exp-${Date.now()}`,
+          const expensePayload = {
             description: description.trim(),
             activityDate,
             splitMode,
@@ -190,24 +221,29 @@
             amount: finalUSDValue, 
             paidByMemberId, 
             splits: finalSplits,
-            createdAt: new Date().toISOString()
+            createdAt: editingExpenseId ? expenses.find(x => x.id === editingExpenseId).createdAt : new Date().toISOString()
           };
 
-          if (editingExpenseId) {
-            setExpenses(expenses.map(exp => exp.id === editingExpenseId ? newExpense : exp));
-            showToast("Expense updated!");
-            setEditingExpenseId(null);
-          } else {
-            setExpenses([newExpense, ...expenses]);
-            showToast("Expense logged!");
-          }
+          try {
+            if (editingExpenseId) {
+              await db.collection('expenses').doc(editingExpenseId).set(expensePayload);
+              showToast("Expense updated!");
+              setEditingExpenseId(null);
+            } else {
+              await db.collection('expenses').add(expensePayload);
+              showToast("Expense logged!");
+            }
 
-          // Reset inputs cleanly
-          setDescription('');
-          setAmount('');
-          setCustomAmounts({});
-          setCoveredMemberIds(allMembers.map(m => m.id)); 
-          setActivityDate(new Date().toISOString().split('T')[0]);
+            // Reset inputs
+            setDescription('');
+            setAmount('');
+            setCustomAmounts({});
+            setCoveredMemberIds(allMembers.map(m => m.id)); 
+            setActivityDate(new Date().toISOString().split('T')[0]);
+          } catch (error) {
+            console.error("Error saving: ", error);
+            showToast("Error communicating with Database.");
+          }
         };
 
         const handleEditClick = (expense) => {
@@ -237,14 +273,18 @@
           window.scrollTo({ top: 0, behavior: 'smooth' });
         };
 
-        const handleDeleteExpense = (id) => {
-          setExpenses(expenses.filter(exp => exp.id !== id));
-          showToast("Expense deleted.");
-          if (editingExpenseId === id) {
-            setEditingExpenseId(null);
-            setDescription('');
-            setAmount('');
-            setCustomAmounts({});
+        const handleDeleteExpense = async (id) => {
+          try {
+            await db.collection('expenses').doc(id).delete();
+            showToast("Expense deleted.");
+            if (editingExpenseId === id) {
+              setEditingExpenseId(null);
+              setDescription('');
+              setAmount('');
+              setCustomAmounts({});
+            }
+          } catch (error) {
+            showToast("Error deleting item.");
           }
         };
 
@@ -353,8 +393,6 @@
           return `${months[parseInt(parts[1], 10) - 1] || parts[1]} ${parseInt(parts[2], 10)}`;
         };
 
-        const currencySymbol = currency === 'USD' ? '$' : 'Sh';
-
         return (
           <div className="min-h-screen bg-slate-50 text-slate-900 pb-24">
             <header className="sticky top-0 z-40 bg-white/95 backdrop-blur-md border-b border-slate-100 shadow-sm px-4 py-3">
@@ -363,11 +401,13 @@
                   <span className="text-2xl">🦁</span>
                   <div>
                     <h1 className="font-extrabold text-base leading-tight">Kenya Splitter</h1>
-                    <p className="text-[10px] text-slate-400">Safari Activity Tracker</p>
+                    <p className="text-[10px] text-slate-400">Firebase Cloud Sync Ready</p>
                   </div>
                 </div>
                 <div className="text-right flex items-center space-x-1">
-                  <span className="text-[10px] bg-slate-100 text-slate-600 font-bold px-2.5 py-1 rounded-full">Self-Contained File</span>
+                  <span className="text-[10px] bg-emerald-50 text-emerald-700 font-bold px-2.5 py-1 rounded-full flex items-center gap-1">
+                    <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span> Cloud Live
+                  </span>
                 </div>
               </div>
             </header>
@@ -397,146 +437,156 @@
 
             <div className="max-w-md mx-auto px-4 mt-3">
               <div className="bg-gradient-to-br from-slate-900 via-slate-800 to-emerald-950 text-white rounded-3xl p-5 shadow-md">
-                <p className="text-emerald-300 text-[10px] font-bold uppercase">Total Trip Cost</p>
+                <p className="text-emerald-300 text-[10px] font-bold uppercase">Total Shared Trip Cost</p>
                 <p className="text-3xl font-black mt-1">${calculations.totalTripCostUSD.toLocaleString(undefined, { minimumFractionDigits: 2 })} <span className="text-sm font-normal">USD</span></p>
               </div>
             </div>
 
             <main className="max-w-md mx-auto px-4 mt-4">
-              {activeTab === 'expenses' && (
-                <div className="space-y-5">
-                  <div className="bg-white rounded-3xl p-5 shadow-sm border border-slate-100">
-                    <h2 className="font-bold text-base text-slate-800 mb-4">{editingExpenseId ? "📝 Edit Safari Activity" : "💸 Log Safari Activity"}</h2>
-                    <form onSubmit={handleSubmitExpense} className="space-y-4">
-                      <div>
-                        <label className="block text-[10px] font-bold text-slate-400 uppercase">What did you pay for?</label>
-                        <input type="text" value={description} onChange={(e) => setDescription(e.target.value)} required className="w-full px-4 py-3 bg-slate-50 border rounded-xl text-sm" placeholder="e.g. Game Drive Park Fees" />
-                      </div>
-                      <div>
-                        <label className="block text-[10px] font-bold text-slate-400 uppercase">Date</label>
-                        <input type="date" value={activityDate} onChange={(e) => setActivityDate(e.target.value)} required className="w-full px-4 py-3 bg-slate-50 border rounded-xl text-sm" />
-                      </div>
-                      <div className="grid grid-cols-2 gap-2">
-                        <div>
-                          <label className="block text-[10px] font-bold text-slate-400 uppercase">Currency</label>
-                          <select value={currency} onChange={(e) => setCurrency(e.target.value)} className="w-full px-2 py-3 bg-slate-50 border rounded-xl text-xs font-bold">
-                            <option value="USD">🇺🇸 USD ($)</option>
-                            <option value="KES">🇰🇪 KES (Sh)</option>
-                          </select>
-                        </div>
-                        <div>
-                          <label className="block text-[10px] font-bold text-slate-400 uppercase">Paid By</label>
-                          <select value={paidByMemberId} onChange={(e) => setPaidByMemberId(e.target.value)} className="w-full px-2 py-3 bg-slate-50 border rounded-xl text-xs">
-                            {allMembers.map(m => (
-                              <option key={m.id} value={m.id}>{m.name}</option>
-                            ))}
-                          </select>
-                        </div>
-                      </div>
-
-                      <div>
-                        <div className="bg-slate-100 p-1 rounded-xl flex space-x-1">
-                          <button type="button" onClick={() => setSplitMode('equal')} className={`flex-1 py-2 text-xs font-extrabold rounded-lg ${splitMode === 'equal' ? 'bg-white text-slate-900' : 'text-slate-400'}`}>⚖️ Split Equally</button>
-                          <button type="button" onClick={() => setSplitMode('custom')} className={`flex-1 py-2 text-xs font-extrabold rounded-lg ${splitMode === 'custom' ? 'bg-white text-slate-900' : 'text-slate-400'}`}>✏️ Custom</button>
-                        </div>
-                      </div>
-
-                      {splitMode === 'equal' && (
-                        <div className="space-y-3">
-                          <input type="number" step="0.01" value={amount} onChange={(e) => setAmount(e.target.value)} placeholder="0.00" className="w-full px-4 py-3 bg-slate-50 border rounded-xl text-sm font-black" />
-                          <div className="space-y-2">
-{INITIAL_FAMILIES.map(fam => (
-                              <div key={fam.id} className={`p-3 rounded-2xl border ${fam.border} ${fam.bg}`}>
-                                <div className="flex justify-between mb-2">
-                                  <span className="text-xs font-bold">{fam.name}</span>
-                                </div>
-                                <div className="grid grid-cols-2 gap-1">
-                                  {fam.members.map(m => {
-                                    const isChecked = coveredMemberIds.includes(m.id);
-                                    return (
-                                      <button key={m.id} type="button" onClick={() => toggleCoveredMember(m.id)} className={`p-2 rounded-xl text-xs border ${isChecked ? 'bg-white border-teal-400 text-teal-900' : 'bg-white/40 text-slate-400'}`}>
-                                        {m.name}
-                                      </button>
-                                    );
-                                  })}
-                                </div>
-                              </div>
-                            ))}
+              {isLoading ? (
+                <div className="text-center py-12">
+                  <div className="inline-block w-8 h-8 border-4 border-slate-300 border-t-slate-800 rounded-full animate-spin"></div>
+                  <p className="text-xs text-slate-400 mt-2">Connecting to KenyaKash database...</p>
+                </div>
+              ) : (
+                <>
+                  {activeTab === 'expenses' && (
+                    <div className="space-y-5">
+                      <div className="bg-white rounded-3xl p-5 shadow-sm border border-slate-100">
+                        <h2 className="font-bold text-base text-slate-800 mb-4">{editingExpenseId ? "📝 Edit Safari Activity" : "💸 Log Safari Activity"}</h2>
+                        <form onSubmit={handleSubmitExpense} className="space-y-4">
+                          <div>
+                            <label className="block text-[10px] font-bold text-slate-400 uppercase">What did you pay for?</label>
+                            <input type="text" value={description} onChange={(e) => setDescription(e.target.value)} required className="w-full px-4 py-3 bg-slate-50 border rounded-xl text-sm" placeholder="e.g. Game Drive Park Fees" />
                           </div>
-                        </div>
-                      )}
+                          <div>
+                            <label className="block text-[10px] font-bold text-slate-400 uppercase">Date</label>
+                            <input type="date" value={activityDate} onChange={(e) => setActivityDate(e.target.value)} required className="w-full px-4 py-3 bg-slate-50 border rounded-xl text-sm" />
+                          </div>
+                          <div className="grid grid-cols-2 gap-2">
+                            <div>
+                              <label className="block text-[10px] font-bold text-slate-400 uppercase">Currency</label>
+                              <select value={currency} onChange={(e) => setCurrency(e.target.value)} className="w-full px-2 py-3 bg-slate-50 border rounded-xl text-xs font-bold">
+                                <option value="USD">🇺🇸 USD ($)</option>
+                                <option value="KES">🇰🇪 KES (Sh)</option>
+                              </select>
+                            </div>
+                            <div>
+                              <label className="block text-[10px] font-bold text-slate-400 uppercase">Paid By</label>
+                              <select value={paidByMemberId} onChange={(e) => setPaidByMemberId(e.target.value)} className="w-full px-2 py-3 bg-slate-50 border rounded-xl text-xs">
+                                {allMembers.map(m => (
+                                  <option key={m.id} value={m.id}>{m.name}</option>
+                                ))}
+                              </select>
+                            </div>
+                          </div>
 
-                      {splitMode === 'custom' && (
-                             <div className="space-y-3">
-                          
-                            {INITIAL_FAMILIES.map(fam => (
-                            <div key={fam.id} className={`p-3 rounded-2xl border ${fam.border} ${fam.bg}`}>
-                              <p className="text-xs font-bold mb-2">{fam.name}</p>
-                              {fam.members.map(m => (
-                                <div key={m.id} className="flex justify-between items-center bg-white/60 p-2 rounded-xl mb-1">
-                                  <span className="text-xs font-semibold">{m.name}</span>
-                                  <input type="number" step="0.01" value={customAmounts[m.id] || ''} onChange={(e) => handleCustomAmountChange(m.id, e.target.value)} className="w-20 px-2 py-1 text-right text-xs rounded border" placeholder="0.00" />
+                          <div>
+                            <div className="bg-slate-100 p-1 rounded-xl flex space-x-1">
+                              <button type="button" onClick={() => setSplitMode('equal')} className={`flex-1 py-2 text-xs font-extrabold rounded-lg ${splitMode === 'equal' ? 'bg-white text-slate-900' : 'text-slate-400'}`}>⚖️ Split Equally</button>
+                              <button type="button" onClick={() => setSplitMode('custom')} className={`flex-1 py-2 text-xs font-extrabold rounded-lg ${splitMode === 'custom' ? 'bg-white text-slate-900' : 'text-slate-400'}`}>✏️ Custom</button>
+                            </div>
+                          </div>
+
+                          {splitMode === 'equal' && (
+                            <div className="space-y-3">
+                              <input type="number" step="0.01" value={amount} onChange={(e) => setAmount(e.target.value)} placeholder="0.00" className="w-full px-4 py-3 bg-slate-50 border rounded-xl text-sm font-black" />
+                              <div className="space-y-2">
+                                {INITIAL_FAMILIES.map(fam => (
+                                  <div key={fam.id} className={`p-3 rounded-2xl border ${fam.border} ${fam.bg}`}>
+                                    <div className="flex justify-between mb-2">
+                                      <span className="text-xs font-bold">{fam.name}</span>
+                                    </div>
+                                    <div className="grid grid-cols-2 gap-1">
+                                      {fam.members.map(m => {
+                                        const isChecked = coveredMemberIds.includes(m.id);
+                                        return (
+                                          <button key={m.id} type="button" onClick={() => toggleCoveredMember(m.id)} className={`p-2 rounded-xl text-xs border ${isChecked ? 'bg-white border-teal-400 text-teal-900' : 'bg-white/40 text-slate-400'}`}>
+                                            {m.name}
+                                          </button>
+                                        );
+                                      })}
+                                    </div>
+                                  </div>
+                                ))}
+                              </div>
+                            </div>
+                          )}
+
+                          {splitMode === 'custom' && (
+                            <div className="space-y-3">
+                              {INITIAL_FAMILIES.map(fam => (
+                                <div key={fam.id} className={`p-3 rounded-2xl border ${fam.border} ${fam.bg}`}>
+                                  <p className="text-xs font-bold mb-2">{fam.name}</p>
+                                  {fam.members.map(m => (
+                                    <div key={m.id} className="flex justify-between items-center bg-white/60 p-2 rounded-xl mb-1">
+                                      <span className="text-xs font-semibold">{m.name}</span>
+                                      <input type="number" step="0.01" value={customAmounts[m.id] || ''} onChange={(e) => handleCustomAmountChange(m.id, e.target.value)} className="w-20 px-2 py-1 text-right text-xs rounded border" placeholder="0.00" />
+                                    </div>
+                                  ))}
                                 </div>
                               ))}
                             </div>
-                          ))}
-                        </div>
-                      )}
+                          )}
 
-                      <button type="submit" className="w-full bg-slate-900 text-white font-bold py-3 rounded-xl hover:bg-slate-800 transition">Save Expense</button>
-                    </form>
-                  </div>
-
-                  <div className="space-y-2">
-                    <h3 className="font-bold text-sm text-slate-800">Trip Expenses ({expenses.length})</h3>
-                    {expenses.length === 0 ? (
-                      <p className="text-xs text-slate-400 text-center py-6">No expenses logged yet.</p>
-                    ) : (
-                      expenses.map(exp => (
-                        <div key={exp.id} className="bg-white rounded-2xl p-4 shadow-sm border border-slate-100 flex justify-between items-center">
-                          <div onClick={() => handleEditClick(exp)} className="cursor-pointer flex-1 pr-4">
-                            <p className="font-bold text-slate-800 text-sm">{exp.description}</p>
-                            <p className="text-xs text-slate-400">{formatFriendlyDate(exp.activityDate)} • ${exp.amount.toFixed(2)} USD</p>
-                          </div>
-                          <button onClick={() => handleDeleteExpense(exp.id)} className="text-slate-400 hover:text-red-500 p-1">🗑️</button>
-                        </div>
-                      ))
-                    )}
-                  </div>
-                </div>
-              )}
-
-              {activeTab === 'settlements' && (
-                <div className="space-y-5">
-                  <div className="bg-white rounded-3xl p-5 shadow-sm border border-slate-100">
-                    <h3 className="font-bold text-base mb-4">Family Balances</h3>
-                    {calculations.familySummaryList.map(summary => (
-                      <div key={summary.id} className="mb-4 flex justify-between items-center">
-                        <div>
-                          <span className="font-bold text-sm">{summary.name}</span>
-                          <p className="text-[10px] text-slate-400">Paid: ${summary.paid.toFixed(2)} | Owed: ${summary.owed.toFixed(2)}</p>
-                        </div>
-                        <span className={`text-sm font-bold ${summary.net >= 0 ? 'text-emerald-600' : 'text-rose-500'}`}>
-                          {summary.net >= 0 ? `+ $${summary.net.toFixed(2)}` : `- $${Math.abs(summary.net).toFixed(2)}`}
-                        </span>
+                          <button type="submit" className="w-full bg-slate-900 text-white font-bold py-3 rounded-xl hover:bg-slate-800 transition">
+                            {editingExpenseId ? "Update Expense" : "Save Expense"}
+                          </button>
+                        </form>
                       </div>
-                    ))}
-                  </div>
 
-                  <div className="bg-white rounded-3xl p-5 shadow-sm border border-slate-100">
-                    <h3 className="font-bold text-base mb-3">Easy Settle Up</h3>
-                    {calculations.transfers.length === 0 ? (
-                      <p className="text-xs text-slate-400 py-2">Everyone is perfectly settled up!</p>
-                    ) : (
-                      calculations.transfers.map((tx, idx) => (
-                        <div key={idx} className="p-3 border rounded-xl text-xs flex justify-between items-center mb-2 bg-slate-50">
-                          <span><strong className={tx.fromColor}>{tx.from}</strong> owes <strong className={tx.toColor}>{tx.to}</strong></span>
-                          <strong className="text-slate-800">${tx.amount.toFixed(2)}</strong>
-                        </div>
-                      ))
-                    )}
-                  </div>
-                </div>
+                      <div className="space-y-2">
+                        <h3 className="font-bold text-sm text-slate-800">Trip Expenses ({expenses.length})</h3>
+                        {expenses.length === 0 ? (
+                          <p className="text-xs text-slate-400 text-center py-6">No expenses logged yet.</p>
+                        ) : (
+                          expenses.map(exp => (
+                            <div key={exp.id} className="bg-white rounded-2xl p-4 shadow-sm border border-slate-100 flex justify-between items-center">
+                              <div onClick={() => handleEditClick(exp)} className="cursor-pointer flex-1 pr-4">
+                                <p className="font-bold text-slate-800 text-sm">{exp.description}</p>
+                                <p className="text-xs text-slate-400">{formatFriendlyDate(exp.activityDate)} • ${exp.amount.toFixed(2)} USD</p>
+                              </div>
+                              <button onClick={() => handleDeleteExpense(exp.id)} className="text-slate-400 hover:text-red-500 p-1">🗑️</button>
+                            </div>
+                          ))
+                        )}
+                      </div>
+                    </div>
+                  )}
+
+                  {activeTab === 'settlements' && (
+                    <div className="space-y-5">
+                      <div className="bg-white rounded-3xl p-5 shadow-sm border border-slate-100">
+                        <h3 className="font-bold text-base mb-4">Family Balances</h3>
+                        {calculations.familySummaryList.map(summary => (
+                          <div key={summary.id} className="mb-4 flex justify-between items-center">
+                            <div>
+                              <span className="font-bold text-sm">{summary.name}</span>
+                              <p className="text-[10px] text-slate-400">Paid: ${summary.paid.toFixed(2)} | Owed: ${summary.owed.toFixed(2)}</p>
+                            </div>
+                            <span className={`text-sm font-bold ${summary.net >= 0 ? 'text-emerald-600' : 'text-rose-500'}`}>
+                              {summary.net >= 0 ? `+ $${summary.net.toFixed(2)}` : `- $${Math.abs(summary.net).toFixed(2)}`}
+                            </span>
+                          </div>
+                        ))}
+                      </div>
+
+                      <div className="bg-white rounded-3xl p-5 shadow-sm border border-slate-100">
+                        <h3 className="font-bold text-base mb-3">Easy Settle Up</h3>
+                        {calculations.transfers.length === 0 ? (
+                          <p className="text-xs text-slate-400 py-2">Everyone is perfectly settled up!</p>
+                        ) : (
+                          calculations.transfers.map((tx, idx) => (
+                            <div key={idx} className="p-3 border rounded-xl text-xs flex justify-between items-center mb-2 bg-slate-50">
+                              <span><strong className={tx.fromColor}>{tx.from}</strong> owes <strong className={tx.toColor}>{tx.to}</strong></span>
+                              <strong className="text-slate-800">${tx.amount.toFixed(2)}</strong>
+                            </div>
+                          ))
+                        )}
+                      </div>
+                    </div>
+                  )}
+                </>
               )}
             </main>
 
