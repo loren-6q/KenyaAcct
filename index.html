@@ -23,7 +23,7 @@
     <script type="text/babel">
       const { useState, useEffect, useMemo } = React;
 
-      // --- YOUR FIREBASE CONFIGURATION (FIXED & FORMATTED) ---
+      // --- YOUR FIREBASE CONFIGURATION ---
       const firebaseConfig = {
         apiKey: "AIzaSyBMo8yhuKVPLeu8fgVCengdVYyM2x74ylM",
         authDomain: "kenyakash.firebaseapp.com",
@@ -96,6 +96,7 @@
         const [splitMode, setSplitMode] = useState('equal'); 
         const [amount, setAmount] = useState(''); 
         const [currency, setCurrency] = useState('USD'); 
+        const [notes, setNotes] = useState(''); 
         const [paidByMemberId, setPaidByMemberId] = useState('m-1-1'); 
         const [coveredMemberIds, setCoveredMemberIds] = useState([]); 
         const [customAmounts, setCustomAmounts] = useState({}); 
@@ -215,6 +216,7 @@
             description: description.trim(),
             activityDate,
             splitMode,
+            notes: notes.trim(),
             originalAmount: finalOriginalAmount,
             originalCurrency: currency,
             exchangeRateSnapshot: exchangeRate,
@@ -237,6 +239,7 @@
             // Reset inputs
             setDescription('');
             setAmount('');
+            setNotes('');
             setCustomAmounts({});
             setCoveredMemberIds(allMembers.map(m => m.id)); 
             setActivityDate(new Date().toISOString().split('T')[0]);
@@ -252,6 +255,7 @@
           setActivityDate(expense.activityDate);
           setCurrency(expense.originalCurrency || 'USD');
           setPaidByMemberId(expense.paidByMemberId);
+          setNotes(expense.notes || '');
           
           const mode = expense.splitMode || 'equal';
           setSplitMode(mode);
@@ -281,6 +285,7 @@
               setEditingExpenseId(null);
               setDescription('');
               setAmount('');
+              setNotes('');
               setCustomAmounts({});
             }
           } catch (error) {
@@ -381,6 +386,15 @@
           }
         };
 
+        const toggleWholeFamilyScope = (familyId, isCurrentlySelected) => {
+          const familyMemberIds = INITIAL_FAMILIES.find(f => f.id === familyId)?.members.map(m => m.id) || [];
+          if (isCurrentlySelected) {
+            setCoveredMemberIds(coveredMemberIds.filter(id => !familyMemberIds.includes(id)));
+          } else {
+            setCoveredMemberIds(Array.from(new Set([...coveredMemberIds, ...familyMemberIds])));
+          }
+        };
+
         const handleCustomAmountChange = (mId, value) => {
           setCustomAmounts(prev => ({ ...prev, [mId]: value }));
         };
@@ -393,6 +407,8 @@
           return `${months[parseInt(parts[1], 10) - 1] || parts[1]} ${parseInt(parts[2], 10)}`;
         };
 
+        const currencySymbol = currency === 'USD' ? '$' : 'Sh';
+
         return (
           <div className="min-h-screen bg-slate-50 text-slate-900 pb-24">
             <header className="sticky top-0 z-40 bg-white/95 backdrop-blur-md border-b border-slate-100 shadow-sm px-4 py-3">
@@ -401,7 +417,7 @@
                   <span className="text-2xl">🦁</span>
                   <div>
                     <h1 className="font-extrabold text-base leading-tight">Kenya Splitter</h1>
-                    <p className="text-[10px] text-slate-400">Firebase Cloud Sync Ready</p>
+                    <p className="text-[10px] text-slate-400">Firebase Cloud Sync Active</p>
                   </div>
                 </div>
                 <div className="text-right flex items-center space-x-1">
@@ -466,7 +482,7 @@
                           <div className="grid grid-cols-2 gap-2">
                             <div>
                               <label className="block text-[10px] font-bold text-slate-400 uppercase">Currency</label>
-                              <select value={currency} onChange={(e) => setCurrency(e.target.value)} className="w-full px-2 py-3 bg-slate-50 border rounded-xl text-xs font-bold">
+                                                              <select value={currency} onChange={(e) => setCurrency(e.target.value)} className="w-full px-2 py-3 bg-slate-50 border rounded-xl text-xs font-bold">
                                 <option value="USD">🇺🇸 USD ($)</option>
                                 <option value="KES">🇰🇪 KES (Sh)</option>
                               </select>
@@ -481,6 +497,12 @@
                             </div>
                           </div>
 
+                          {/* Notes Text Area */}
+                          <div>
+                            <label className="block text-[10px] font-bold text-slate-400 uppercase">Notes (optional)</label>
+                            <textarea value={notes} onChange={(e) => setNotes(e.target.value)} className="w-full px-4 py-2.5 bg-slate-50 border rounded-xl text-sm focus:outline-none" rows="2" placeholder="Describe lunch details, specific tickets bought, etc." />
+                          </div>
+
                           <div>
                             <div className="bg-slate-100 p-1 rounded-xl flex space-x-1">
                               <button type="button" onClick={() => setSplitMode('equal')} className={`flex-1 py-2 text-xs font-extrabold rounded-lg ${splitMode === 'equal' ? 'bg-white text-slate-900' : 'text-slate-400'}`}>⚖️ Split Equally</button>
@@ -491,24 +513,38 @@
                           {splitMode === 'equal' && (
                             <div className="space-y-3">
                               <input type="number" step="0.01" value={amount} onChange={(e) => setAmount(e.target.value)} placeholder="0.00" className="w-full px-4 py-3 bg-slate-50 border rounded-xl text-sm font-black" />
-                              <div className="space-y-2">
-                                {INITIAL_FAMILIES.map(fam => (
-                                  <div key={fam.id} className={`p-3 rounded-2xl border ${fam.border} ${fam.bg}`}>
-                                    <div className="flex justify-between mb-2">
-                                      <span className="text-xs font-bold">{fam.name}</span>
+                              <div className="space-y-3">
+                                {INITIAL_FAMILIES.map(fam => {
+                                  const familyMemberIds = fam.members.map(m => m.id);
+                                  const selectedFamilyMembersCount = fam.members.filter(m => coveredMemberIds.includes(m.id)).length;
+                                  const isSelected = selectedFamilyMembersCount > 0;
+
+                                  return (
+                                    <div key={fam.id} className={`p-3 rounded-2xl border ${fam.border} ${fam.bg}`}>
+                                      <div className="flex justify-between items-center mb-2 pb-1 border-b border-white/60">
+                                        <span className={`text-xs font-bold ${fam.text}`}>{fam.name}</span>
+                                        {/* Dynamic Select/Deselect button restored */}
+                                        <button
+                                          type="button"
+                                          onClick={() => toggleWholeFamilyScope(fam.id, isSelected)}
+                                          className={`text-[9px] font-bold px-2 py-0.5 rounded-full border ${fam.text} bg-white`}
+                                        >
+                                          {isSelected ? "Deselect Family" : "Select Family"}
+                                        </button>
+                                      </div>
+                                      <div className="grid grid-cols-2 gap-1">
+                                        {fam.members.map(m => {
+                                          const isChecked = coveredMemberIds.includes(m.id);
+                                          return (
+                                            <button key={m.id} type="button" onClick={() => toggleCoveredMember(m.id)} className={`p-2 rounded-xl text-xs border ${isChecked ? 'bg-white border-teal-400 text-teal-900' : 'bg-white/40 text-slate-400'}`}>
+                                              {m.name}
+                                            </button>
+                                          );
+                                        })}
+                                      </div>
                                     </div>
-                                    <div className="grid grid-cols-2 gap-1">
-                                      {fam.members.map(m => {
-                                        const isChecked = coveredMemberIds.includes(m.id);
-                                        return (
-                                          <button key={m.id} type="button" onClick={() => toggleCoveredMember(m.id)} className={`p-2 rounded-xl text-xs border ${isChecked ? 'bg-white border-teal-400 text-teal-900' : 'bg-white/40 text-slate-400'}`}>
-                                            {m.name}
-                                          </button>
-                                        );
-                                      })}
-                                    </div>
-                                  </div>
-                                ))}
+                                  );
+                                })}
                               </div>
                             </div>
                           )}
@@ -541,10 +577,16 @@
                           <p className="text-xs text-slate-400 text-center py-6">No expenses logged yet.</p>
                         ) : (
                           expenses.map(exp => (
-                            <div key={exp.id} className="bg-white rounded-2xl p-4 shadow-sm border border-slate-100 flex justify-between items-center">
+                            <div key={exp.id} className="bg-white rounded-2xl p-4 shadow-sm border border-slate-100 flex justify-between items-start">
                               <div onClick={() => handleEditClick(exp)} className="cursor-pointer flex-1 pr-4">
                                 <p className="font-bold text-slate-800 text-sm">{exp.description}</p>
-                                <p className="text-xs text-slate-400">{formatFriendlyDate(exp.activityDate)} • ${exp.amount.toFixed(2)} USD</p>
+                                <p className="text-[10px] text-slate-400 font-medium mb-1">{formatFriendlyDate(exp.activityDate)} • ${exp.amount.toFixed(2)} USD</p>
+                                {/* Notes printed in the ledger card */}
+                                {exp.notes && (
+                                  <p className="text-xs text-slate-500 italic mt-1 bg-slate-50 p-2 rounded-lg border border-slate-100">
+                                    " {exp.notes} "
+                                  </p>
+                                )}
                               </div>
                               <button onClick={() => handleDeleteExpense(exp.id)} className="text-slate-400 hover:text-red-500 p-1">🗑️</button>
                             </div>
@@ -609,3 +651,5 @@
     </script>
 </body>
 </html>
+
+                
